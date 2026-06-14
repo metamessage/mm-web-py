@@ -1,11 +1,12 @@
 """Route decorators for MetaMessage in FastAPI."""
 
+import dataclasses
 import functools
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from metamessage import decode_to_value, encode_from_value
+from metamessage import Tag, decode_to_value, encode_from_value
 
 from .middleware import MMMiddleware
 from mm_core.types import CONTENT_TYPE_METAMESSAGE
@@ -456,6 +457,40 @@ def _is_mm_model(cls: type) -> bool:
     return hasattr(cls, '_mm_schema') or (hasattr(cls, '__annotations__') and hasattr(cls, '_mm_fields'))
 
 
+def _clean_mm_defaults(instance: Any) -> Any:
+    """Replace metamessage field descriptor defaults with None.
+    
+    When a @dataclass model uses `name: str = mm(desc="...")`, the field 
+    default IS an mm() instance. When no data is provided (empty query/body),
+    constructing the model gives mm objects as values. This helper replaces 
+    those with None so handlers can work with proper types.
+    """
+    if not dataclasses.is_dataclass(instance):
+        return instance
+    for field_def in dataclasses.fields(instance):
+        val = getattr(instance, field_def.name)
+        # mm is itself a dataclass, so check the class name
+        if type(val).__name__ == "mm":
+            setattr(instance, field_def.name, None)
+    return instance
+
+
+def _make_empty_instance(model: type) -> Any:
+    """Create a model instance without calling __init__, setting all fields to None.
+    
+    Handles models that can't be instantiated without arguments (e.g., mm descriptor
+    fields without proper defaults). Falls back to the model itself if unavailable.
+    """
+    try:
+        inst = object.__new__(model)
+        for name in getattr(model, '__annotations__', {}):
+            if not name.startswith('_'):
+                setattr(inst, name, None)
+        return inst
+    except Exception:
+        return model()
+
+
 async def _bind_params(
     request: Request,
     param_type: type,
@@ -484,22 +519,31 @@ async def _bind_params(
     # For POST/PUT/PATCH, bind from body
     if method in ('POST', 'PUT', 'PATCH'):
         data = await get_mm_body(request)
-        
+
         if _is_mm_model(param_type):
-            return param_type(**data)
+            return _clean_mm_defaults(param_type(**data))
         elif hasattr(param_type, '__init__'):
-            return param_type(**data)
+            try:
+                return _clean_mm_defaults(param_type(**data))
+            except (TypeError, ValueError):
+                return data
         else:
             return data
-    
+
     # For GET/DELETE, bind from query
     if method in ('GET', 'DELETE'):
         query = getattr(request.state, 'mm_query', {})
-        
+
         if _is_mm_model(param_type):
-            return param_type(**query)
+            try:
+                return _clean_mm_defaults(param_type(**query))
+            except (TypeError, ValueError):
+                return _make_empty_instance(param_type)
         elif hasattr(param_type, '__init__'):
-            return param_type(**query)
+            try:
+                return _clean_mm_defaults(param_type(**query))
+            except (TypeError, ValueError):
+                return _make_empty_instance(param_type)
         else:
             return query
     
@@ -849,9 +893,25 @@ class MMRouter(APIRouter):
     def _create_options_handler(self, model: Type) -> Callable:
         async def handler(request: Request) -> Response:
             try:
-                inst = model() if hasattr(model, '__init__') else model
-                data = inst.__dict__ if hasattr(inst, '__dict__') else (inst if isinstance(inst, dict) else {})
-                return Response(content=encode_from_value(data), status_code=200, media_type=CONTENT_TYPE_METAMESSAGE)
+                # Try normal instantiation first
+                try:
+                    inst = model() if hasattr(model, '__init__') else model
+                except TypeError:
+                    # Model can't be instantiated without args (e.g., mm-descriptor fields
+                    # without proper defaults). Build schema dict from annotations.
+                    inst = {}
+                    for name in getattr(model, '__annotations__', {}):
+                        if name.startswith('_'):
+                            continue
+                        default = getattr(model, name, None)
+                        inst[name] = default
+                # Pass model instance directly to encode_from_value so it can
+                # use type annotations to infer ValueType for None values.
+                return Response(
+                    content=encode_from_value(inst, tag=Tag(example=True)),
+                    status_code=200,
+                    media_type=CONTENT_TYPE_METAMESSAGE,
+                )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e)) from e
         return handler
@@ -890,7 +950,13 @@ class MMRouter(APIRouter):
                 raise HTTPException(status_code=500, detail=str(e)) from e
         return wrapper  # type: ignore
 
-    def add_api_route(self, path: str, endpoint: Callable, *, status_code: int = 200, methods: Optional[List[str]] = None, **kwargs: Any) -> None:
+    def add_api_route(self, path: str, endpoint: Callable, *, status_code: Optional[int] = None, methods: Optional[List[str]] = None, **kwargs: Any) -> None:
+        # Infer default status_code from HTTP method if not explicitly set
+        if status_code is None:
+            if methods and "POST" in methods:
+                status_code = 201
+            else:
+                status_code = 200
         wrapped = self._wrap_handler(endpoint, status_code)
         app = self._app
         if app is not None:

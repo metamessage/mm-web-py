@@ -71,6 +71,8 @@ async def list_users(req: ListUsersRequest) -> ListUsersResponse:
     Similar to mm-web-go: req is automatically bound from URL query.
     Request object is available as 'r' for accessing raw request data.
     """
+
+    print(f'req {req}')
     filtered_users = users_db
     page = req.page or 1
     page_size = req.page_size or 10
@@ -113,6 +115,7 @@ async def get_user(user_id: int, req: GetUserRequest) -> Union[APIResponse, Erro
 @router.post("/api/v1/user/create")
 async def create_user(req: CreateUserRequest) -> APIResponse:
     """Create a new user."""
+    print(f'CreateUserRequest {req}')
     new_id = max((u.id for u in users_db), default=0) + 1
     new_user = User(
         id=new_id,

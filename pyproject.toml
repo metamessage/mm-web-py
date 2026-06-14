@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "MetaMessage protocol integrations for Python web frameworks"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "mm-web-py contributors"}
 ]
@@ -19,16 +19,21 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Programming Language :: Python :: 3.16",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
 dependencies = [
-    "metamessage>=0.2.2",
+    "metamessage>=0.2.7",
     "httpx>=0.24.0",
+    "fastapi>=0.136.3",
+    "uvicorn>=0.49.0",
 ]
 
 [project.optional-dependencies]
@@ -65,13 +70,13 @@ packages = ["src/mm_core", "src/mm_fastapi", "src/mm_flask", "src/mm_django"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py38"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
