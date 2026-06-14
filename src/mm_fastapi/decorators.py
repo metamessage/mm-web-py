@@ -521,12 +521,15 @@ async def _bind_params(
         data = await get_mm_body(request)
 
         if _is_mm_model(param_type):
-            return _clean_mm_defaults(param_type(**data))
+            try:
+                return _clean_mm_defaults(param_type(**data))
+            except (TypeError, ValueError):
+                return _make_empty_instance(param_type)
         elif hasattr(param_type, '__init__'):
             try:
                 return _clean_mm_defaults(param_type(**data))
             except (TypeError, ValueError):
-                return data
+                return _make_empty_instance(param_type)
         else:
             return data
 
@@ -956,12 +959,9 @@ class MMRouter(APIRouter):
         return wrapper  # type: ignore
 
     def add_api_route(self, path: str, endpoint: Callable, *, status_code: Optional[int] = None, methods: Optional[List[str]] = None, **kwargs: Any) -> None:
-        # Infer default status_code from HTTP method if not explicitly set
+        # Default to 200 for all methods
         if status_code is None:
-            if methods and "POST" in methods:
-                status_code = 201
-            else:
-                status_code = 200
+            status_code = 200
         wrapped = self._wrap_handler(endpoint, status_code)
         app = self._app
         if app is not None:
