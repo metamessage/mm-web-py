@@ -70,7 +70,7 @@ class ListUsersResponse:
 @mm(desc="Generic API response")
 class APIResponse:
     """Generic API response."""
-    code: int = mm(desc="Response code")
+    code: int = mm(desc="Response code", allow_empty=True)
     message: str = mm(desc="Response message")
     data: Optional[User] = mm(desc="Response data")
 

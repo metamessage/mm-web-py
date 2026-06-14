@@ -947,7 +947,12 @@ class MMRouter(APIRouter):
                 content = encode_from_value(result)
                 return Response(content=content, status_code=status_code, media_type=CONTENT_TYPE_METAMESSAGE)
             except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e)) from e
+                # Return error as status 200 with MetaMessage encoding
+                try:
+                    content = encode_from_value({"error": str(e)})
+                except Exception:
+                    content = b"error:" + str(e).encode()
+                return Response(content=content, status_code=200, media_type=CONTENT_TYPE_METAMESSAGE)
         return wrapper  # type: ignore
 
     def add_api_route(self, path: str, endpoint: Callable, *, status_code: Optional[int] = None, methods: Optional[List[str]] = None, **kwargs: Any) -> None:
