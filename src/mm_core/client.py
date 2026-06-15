@@ -99,6 +99,7 @@ class MMClient:
     def __init__(self, base_url: str, debug: bool = False):
         self.base_url = base_url.rstrip("/")
         self.debug = debug
+        self._options_schema_md5: Dict[str, str] = {}
         self._client = httpx.Client(
             transport=httpx.HTTPTransport(trust_env=False),
         )
@@ -151,12 +152,17 @@ class MMClient:
         resp = self._client.request(
             method="OPTIONS",
             url=self._get_url(path),
-            headers=self._build_headers(),
+            headers={
+                **self._build_headers(),
+                "Cache-Control": "no-cache",
+            },
         )
         if resp.status_code != 200:
             raise MMClientError(
                 f"schema request failed: OPTIONS {path} -> {resp.status_code}"
             )
+        # Cache schema-md5 from response headers for subsequent requests
+        self._options_schema_md5[path] = resp.headers.get("schema-md5", "")
         if resp.content:
             try:
                 v = decode_to_value(resp.content, target_type=body_type)
@@ -179,6 +185,10 @@ class MMClient:
             self._options_preflight(path, body_type=type(body) if body is not None else None)
 
         headers = self._build_headers(extra_headers)
+        # Add cached schema-md5 for schema validation
+        schema_md5 = self._options_schema_md5.get(path)
+        if schema_md5:
+            headers["schema-md5"] = schema_md5
         url = self._get_url(path)
         content = None
 
@@ -287,6 +297,7 @@ class AsyncMMClient:
     def __init__(self, base_url: str, debug: bool = False):
         self.base_url = base_url.rstrip("/")
         self.debug = debug
+        self._options_schema_md5: Dict[str, str] = {}
         self._client = httpx.AsyncClient(
             transport=httpx.AsyncHTTPTransport(trust_env=False),
         )
@@ -340,6 +351,8 @@ class AsyncMMClient:
             raise MMClientError(
                 f"schema request failed: OPTIONS {path} -> {resp.status_code}"
             )
+        # Cache schema-md5 from response headers for subsequent requests
+        self._options_schema_md5[path] = resp.headers.get("schema-md5", "")
         if resp.content:
             try:
                 decode_to_value(resp.content, target_type=body_type)
@@ -361,6 +374,10 @@ class AsyncMMClient:
             await self._options_preflight(path, body_type=type(body) if body is not None else None)
 
         headers = self._build_headers(extra_headers)
+        # Add cached schema-md5 for schema validation
+        schema_md5 = self._options_schema_md5.get(path)
+        if schema_md5:
+            headers["schema-md5"] = schema_md5
         url = self._get_url(path)
         content = None
 

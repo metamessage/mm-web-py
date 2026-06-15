@@ -2,8 +2,9 @@
 
 import dataclasses
 import functools
+import hashlib
 import inspect
-from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from metamessage import Tag, decode_to_value, encode_from_value
@@ -893,37 +894,56 @@ class MMRouter(APIRouter):
             return t
         return None
 
-    def _create_options_handler(self, model: Type) -> Callable:
-        async def handler(request: Request) -> Response:
+    def _compute_options_content(self, model: Type) -> Tuple[bytes, str]:
+        """Pre-compute OPTIONS response content and its MD5 hash at startup."""
+        try:
             try:
-                # Try normal instantiation first
-                try:
-                    inst = model() if hasattr(model, '__init__') else model
-                except TypeError:
-                    # Model can't be instantiated without args (e.g., mm-descriptor fields
-                    # without proper defaults). Build schema dict from annotations.
-                    inst = {}
-                    for name in getattr(model, '__annotations__', {}):
-                        if name.startswith('_'):
-                            continue
-                        default = getattr(model, name, None)
-                        inst[name] = default
-                # Pass model instance directly to encode_from_value so it can
-                # use type annotations to infer ValueType for None values.
-                return Response(
-                    content=encode_from_value(inst, tag=Tag(example=True)),
-                    status_code=200,
-                    media_type=CONTENT_TYPE_METAMESSAGE,
-                )
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e)) from e
+                inst = model() if hasattr(model, '__init__') else model
+            except TypeError:
+                inst = {}
+                for name in getattr(model, '__annotations__', {}):
+                    if name.startswith('_'):
+                        continue
+                    default = getattr(model, name, None)
+                    inst[name] = default
+            content: bytes = encode_from_value(inst, tag=Tag(example=True))
+        except Exception as e:
+            err = str(e)
+            if "not allow empty" in err:
+                field = err.split(":")[0].strip() if ":" in err else "unknown"
+                err = f"schema validation: field '{field}' has empty value (add allow_empty tag or use example field)"
+            content = encode_from_value({"error": err})
+        return content, hashlib.md5(content).hexdigest()
+
+    def _create_options_handler(self, content: bytes, md5_hex: str) -> Callable:
+        async def handler(request: Request) -> Response:
+            return Response(
+                content=content,
+                status_code=200,
+                media_type=CONTENT_TYPE_METAMESSAGE,
+                headers={
+                    "Access-Control-Max-Age": "86400",
+                    "schema-md5": md5_hex,
+                },
+            )
         return handler
 
-    def _wrap_handler(self, func: F, status_code: Optional[int] = None) -> F:
+    def _wrap_handler(self, func: F, path: str, status_code: Optional[int] = None, expected_md5: Optional[str] = None) -> F:
         if status_code is None:
             status_code = 200
         sig = inspect.signature(func)
+
         async def wrapper(request: Request) -> Response:
+            # Validate schema-md5 header against expected md5
+            if expected_md5:
+                client_md5 = request.headers.get("schema-md5")
+                if client_md5 and client_md5 != expected_md5:
+                    err = f"schema-md5 mismatch: client={client_md5}, server={expected_md5}"
+                    try:
+                        content = encode_from_value({"error": err})
+                    except Exception:
+                        content = b"error:" + err.encode()
+                    return Response(content=content, status_code=200, media_type=CONTENT_TYPE_METAMESSAGE)
             kwargs = {}
             for name, param in sig.parameters.items():
                 t = param.annotation
@@ -962,17 +982,24 @@ class MMRouter(APIRouter):
         # Default to 200 for all methods
         if status_code is None:
             status_code = 200
-        wrapped = self._wrap_handler(endpoint, status_code)
+
+        # Pre-compute options content once at startup for schema-md5 validation
+        options_content: Optional[bytes] = None
+        options_md5: Optional[str] = None
+        if self.auto_options:
+            model = self._get_request_model(endpoint)
+            if model:
+                options_content, options_md5 = self._compute_options_content(model)
+
+        wrapped = self._wrap_handler(endpoint, path, status_code, expected_md5=options_md5)
         app = self._app
         if app is not None:
             app.router.add_api_route(path, wrapped, status_code=status_code, methods=methods, **kwargs)
         else:
             super().add_api_route(path, wrapped, status_code=status_code, methods=methods, **kwargs)
-        if self.auto_options:
-            model = self._get_request_model(endpoint)
-            if model:
-                options_handler = self._create_options_handler(model)
-                if app is not None:
-                    app.router.add_api_route(path, options_handler, methods=["OPTIONS"])
-                else:
-                    super().add_api_route(path, options_handler, methods=["OPTIONS"])
+        if self.auto_options and options_content is not None and options_md5 is not None:
+            options_handler = self._create_options_handler(options_content, options_md5)
+            if app is not None:
+                app.router.add_api_route(path, options_handler, methods=["OPTIONS"])
+            else:
+                super().add_api_route(path, options_handler, methods=["OPTIONS"])
